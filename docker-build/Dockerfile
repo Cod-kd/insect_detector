@@ -11,6 +11,7 @@ RUN apt-get update && apt-get install -y \
     libcurl4-openssl-dev \
     xxd \
     ccache \
+    python3 \
     && rm -rf /var/lib/apt/lists/*
 
 ENV PATH="/usr/lib/ccache:$PATH"
@@ -19,6 +20,11 @@ WORKDIR /app
 
 COPY tflm_standalone ./tflm_standalone
 
+COPY docker-build/patch_compatibility.py .
+
+# Fix compatibility.h
+RUN python3 patch_compatibility.py
+
 # Build TFLite as static lib — cached unless tflm_standalone changes
 RUN find tflm_standalone -name "*.cc" \
         | grep -v "_test\." \
@@ -26,6 +32,9 @@ RUN find tflm_standalone -name "*.cc" \
         | grep -v "mock_" \
         | grep -v "fake_" \
         | grep -v "decode_state" \
+        | grep -v "tflm_standalone/signal/" \
+        | grep -v "recording_micro_allocator" \
+        | grep -v "micro_error_reporter" \
         | xargs -P4 -I{} g++ -c {} \
             -Itflm_standalone \
             -Itflm_standalone/third_party/flatbuffers/include \
@@ -33,9 +42,9 @@ RUN find tflm_standalone -name "*.cc" \
             -Itflm_standalone/third_party/ruy \
             -Itflm_standalone/third_party \
             -DTF_LITE_STATIC_MEMORY \
-            -std=c++17 -O2 && \
-    ar rcs tflm_lib.a *.o && \
-    rm *.o
+            -std=c++17 -O2 \
+        && ar rcs tflm_lib.a *.o \
+        && rm *.o
 
 # Copy rest of project separately so above layer stays cached
 COPY . .
