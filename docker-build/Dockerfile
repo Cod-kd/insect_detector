@@ -11,12 +11,23 @@ RUN apt-get update && apt-get install -y \
     libcurl4-openssl-dev \
     tzdata \
     xxd \
+    git \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
 
-# Copy EVERYTHING from project root (important!)
+# Copy project files
 COPY . .
+
+# ── Fetch exact third-party deps from tflite-micro repo at build time ─────────
+# This guarantees version match regardless of what setup_tflm.sh copied locally.
+# We only clone the specific third_party folders we need (sparse checkout).
+RUN git clone --depth=1 --filter=blob:none --sparse \
+        https://github.com/tensorflow/tflite-micro.git /tmp/tflm && \
+    cd /tmp/tflm && \
+    git sparse-checkout set third_party && \
+    cp -r /tmp/tflm/third_party /app/ && \
+    rm -rf /tmp/tflm
 
 # Generate model.h from .tflite if not already present
 RUN if [ ! -f models/model.h ] && [ -f models/model.tflite ]; then \
