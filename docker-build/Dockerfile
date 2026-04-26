@@ -11,8 +11,7 @@ RUN apt-get update && apt-get install -y \
     libcurl4-openssl-dev \
     xxd \
     ccache \
-    python3 \
-    && rm -rf /var/lib/apt/lists/*
+    python3
 
 ENV PATH="/usr/lib/ccache:$PATH"
 
@@ -34,7 +33,6 @@ RUN find tflm_standalone -name "*.cc" \
         | grep -v "decode_state" \
         | grep -v "tflm_standalone/signal/" \
         | grep -v "recording_micro_allocator" \
-        | grep -v "micro_error_reporter" \
         | xargs -P4 -I{} g++ -c {} \
             -Itflm_standalone \
             -Itflm_standalone/third_party/flatbuffers/include \
@@ -76,8 +74,7 @@ ENV DEBIAN_FRONTEND=noninteractive
 
 RUN apt-get update && apt-get install -y \
     libopencv-dev \
-    libcurl4-openssl-dev \
-    && rm -rf /var/lib/apt/lists/*
+    libcurl4-openssl-dev
 
 WORKDIR /app
 
