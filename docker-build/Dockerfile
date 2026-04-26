@@ -21,23 +21,19 @@ RUN if [ ! -f models/model.h ] && [ -f models/model.tflite ]; then \
         xxd -i models/model.tflite > models/model.h; \
     fi
 
-# Build the TFLite Micro static library from standalone
-RUN cd tflm_standalone && \
-    make -f tensorflow/lite/micro/tools/make/Makefile \
-    microlite -j4 && \
-    mkdir -p /app/tflm_lib && \
-    cp tensorflow/lite/micro/tools/make/gen/linux_x86_64/lib/libtensorflow-microlite.a \
-    /app/tflm_lib/
-
 # Compile
 RUN g++ detector_micro.cpp \
+    $(find tflm_standalone -name "*.cc" \
+        | grep -v "_test\." \
+        | grep -v "test_" \
+        | grep -v "mock_" \
+        | grep -v "fake_") \
     $(pkg-config --cflags --libs opencv4) \
     -Itflm_standalone \
     -Itflm_standalone/third_party/flatbuffers/include \
     -Itflm_standalone/third_party/gemmlowp \
     -Itflm_standalone/third_party/ruy \
     -Itflm_standalone/third_party \
-    -Ltflm_lib -ltensorflow-microlite \
     -lcurl -lm -lpthread \
     -DTF_LITE_STATIC_MEMORY \
     -std=c++17 -O2 \
