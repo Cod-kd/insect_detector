@@ -2,3 +2,4 @@ tflite-micro/
 server.py
 README.md
 .gitignore
+models/check.py

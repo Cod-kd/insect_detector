@@ -16,11 +16,8 @@
  *   ├── Dockerfile
  *   ├── setup_tflm.sh
  *   ├── models/
- *   │   ├── model.tflite
- *   │   └── model.h          ← xxd -i models/model.tflite > models/model.h
- *   ├── tflm_srcs/           ← .cc forrásfájlok (setup_tflm.sh másolja)
- *   ├── tflm_includes/       ← header fájlok   (setup_tflm.sh másolja)
- *   └── third_party/         ← flatbuffers stb. (setup_tflm.sh másolja)
+ *       ├── model.tflite
+ *       └── model.h          ← xxd -i models/model.tflite > models/model.h
  */
 
 /* ── TFLite Micro fejlécek ──────────────────────────────────── */
@@ -50,7 +47,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <math.h>
-#include <time.h>
+#include <ctime>
 #include <stdint.h>
 #include <vector>
 #include <string>
@@ -134,10 +131,18 @@ static void post_log(const char *label, float confidence,
     std::string img_b64 = base64_encode(jpeg_buf.data(), jpeg_buf.size());
 
     /* Timestamp */
-    time_t t = time(NULL);
-    struct tm *tm_info = localtime(&t);
+    std::time_t t = std::time(nullptr);
+
+    std::tm tm_info{};
+
+    #ifdef _WIN32
+        localtime_s(&tm_info, &t);
+    #else
+        localtime_r(&t, &tm_info);
+    #endif
+
     char ts[32];
-    strftime(ts, sizeof(ts), "%Y-%m-%d %H:%M:%S", tm_info);
+    std::strftime(ts, sizeof(ts), "%Y-%m-%d %H:%M:%S", &tm_info);
 
     /* JSON összerakása — a base64 string lehet nagy, std::string kell */
     std::string json = std::string("{")

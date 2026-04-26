@@ -10,10 +10,33 @@ RUN apt-get update && apt-get install -y \
     libopencv-dev \
     libcurl4-openssl-dev \
     xxd \
+    ccache \
     && rm -rf /var/lib/apt/lists/*
+
+ENV PATH="/usr/lib/ccache:$PATH"
 
 WORKDIR /app
 
+COPY tflm_standalone ./tflm_standalone
+
+# Build TFLite as static lib — cached unless tflm_standalone changes
+RUN find tflm_standalone -name "*.cc" \
+        | grep -v "_test\." \
+        | grep -v "test_" \
+        | grep -v "mock_" \
+        | grep -v "fake_" \
+        | xargs -P4 -I{} g++ -c {} \
+            -Itflm_standalone \
+            -Itflm_standalone/third_party/flatbuffers/include \
+            -Itflm_standalone/third_party/gemmlowp \
+            -Itflm_standalone/third_party/ruy \
+            -Itflm_standalone/third_party \
+            -DTF_LITE_STATIC_MEMORY \
+            -std=c++17 -O2 && \
+    ar rcs tflm_lib.a *.o && \
+    rm *.o
+
+# Copy rest of project separately so above layer stays cached
 COPY . .
 
 # Generate model.h if not present
@@ -21,19 +44,15 @@ RUN if [ ! -f models/model.h ] && [ -f models/model.tflite ]; then \
         xxd -i models/model.tflite > models/model.h; \
     fi
 
-# Compile
+# Only your code recompiles on changes
 RUN g++ detector_micro.cpp \
-    $(find tflm_standalone -name "*.cc" \
-        | grep -v "_test\." \
-        | grep -v "test_" \
-        | grep -v "mock_" \
-        | grep -v "fake_") \
     $(pkg-config --cflags --libs opencv4) \
     -Itflm_standalone \
     -Itflm_standalone/third_party/flatbuffers/include \
     -Itflm_standalone/third_party/gemmlowp \
     -Itflm_standalone/third_party/ruy \
     -Itflm_standalone/third_party \
+    tflm_lib.a \
     -lcurl -lm -lpthread \
     -DTF_LITE_STATIC_MEMORY \
     -std=c++17 -O2 \
