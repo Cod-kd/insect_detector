@@ -28,6 +28,8 @@ RUN g++ detector_micro.cpp tflm_srcs/*.cc \
     $(pkg-config --cflags --libs opencv4) \
     -Itflm_includes \
     -Ithird_party/flatbuffers/include \
+    -Ithird_party/gemmlowp \
+    -Ithird_party/ruy \
     -Ithird_party \
     -lcurl -lm -lpthread \
     -DTF_LITE_STATIC_MEMORY \

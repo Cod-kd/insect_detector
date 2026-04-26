@@ -27,15 +27,16 @@ mkdir -p "$PROJECT/tflm_srcs"
 mkdir -p "$PROJECT/tflm_includes"
 mkdir -p "$PROJECT/third_party/flatbuffers/include"
 mkdir -p "$PROJECT/third_party/gemmlowp"
+mkdir -p "$PROJECT/third_party/ruy"
 mkdir -p "$PROJECT/models"
 
 # ─── 1. Header fa ─────────────────────────────────────────────────────────────
-echo "[1/4] Headerek másolása..."
+echo "[1/5] Headerek másolása..."
 cp -r "$TFLM_REPO/tensorflow" "$PROJECT/tflm_includes/"
 echo "  ✓ tensorflow/ header fa"
 
 # ─── 2. Core .cc forrásfájlok ─────────────────────────────────────────────────
-echo "[2/4] Core TFLite Micro forrásfájlok..."
+echo "[2/5] Core TFLite Micro forrásfájlok..."
 MICRO="$TFLM_REPO/tensorflow/lite/micro"
 
 CORE_FILES=(
@@ -64,7 +65,7 @@ for f in "${CORE_FILES[@]}"; do
 done
 
 # ─── 3. Kernelek — csak a modell op-jai ───────────────────────────────────────
-echo "[3/4] Kernel forrásfájlok (QUANTIZE, PAD, CONV_2D, DEPTHWISE_CONV_2D,"
+echo "[3/5] Kernel forrásfájlok (QUANTIZE, PAD, CONV_2D, DEPTHWISE_CONV_2D,"
 echo "      ADD, MEAN, FULLY_CONNECTED, SOFTMAX, DEQUANTIZE)..."
 KERNEL_FILES=(
     "kernels/quantize.cc"
@@ -86,8 +87,8 @@ for f in "${KERNEL_FILES[@]}"; do
         || echo "  ! hiányzik: $f"
 done
 
-# ─── 4. TFLite common + third_party ──────────────────────────────────────────
-echo "[4/4] Common + third_party..."
+# ─── 4. TFLite common ─────────────────────────────────────────────────────────
+echo "[4/5] TFLite common forrásfájlok..."
 LITE="$TFLM_REPO/tensorflow/lite"
 LITE_FILES=(
     "core/c/common.cc"
@@ -107,34 +108,59 @@ for f in "${LITE_FILES[@]}"; do
         || echo "  ! hiányzik: lite/$f"
 done
 
-FB="$TFLM_REPO/third_party/flatbuffers/include"
-[ -d "$FB" ] \
-    && cp -r "$FB/." "$PROJECT/third_party/flatbuffers/include/" && echo "  ✓ flatbuffers" \
-    || echo "  ! flatbuffers nem találtam"
+# ─── 5. Third-party headers ───────────────────────────────────────────────────
+echo "[5/5] Third-party headerek..."
 
+# flatbuffers → "flatbuffers/flatbuffers.h"
+FB="$TFLM_REPO/third_party/flatbuffers/include"
+if [ -d "$FB" ]; then
+    cp -r "$FB/." "$PROJECT/third_party/flatbuffers/include/"
+    echo "  ✓ flatbuffers (repóból)"
+else
+    echo "  ! flatbuffers nem a repóban — letöltés..."
+    curl -sL https://github.com/google/flatbuffers/archive/refs/tags/v23.5.26.tar.gz \
+        | tar -xz -C /tmp
+    cp -r /tmp/flatbuffers-23.5.26/include/flatbuffers \
+          "$PROJECT/third_party/flatbuffers/include/"
+    rm -rf /tmp/flatbuffers-23.5.26
+    echo "  ✓ flatbuffers (letöltve)"
+fi
+
+# gemmlowp → "fixedpoint/fixedpoint.h"
 GEMM="$TFLM_REPO/third_party/gemmlowp"
-[ -d "$GEMM" ] \
-    && cp -r "$GEMM/." "$PROJECT/third_party/gemmlowp/" && echo "  ✓ gemmlowp" \
-    || echo "  ! gemmlowp hiányzik"
+if [ -d "$GEMM" ]; then
+    cp -r "$GEMM/." "$PROJECT/third_party/gemmlowp/"
+    echo "  ✓ gemmlowp (repóból)"
+else
+    echo "  ! gemmlowp nem a repóban — letöltés..."
+    curl -sL https://github.com/google/gemmlowp/archive/refs/heads/master.tar.gz \
+        | tar -xz -C /tmp
+    cp -r /tmp/gemmlowp-master/fixedpoint \
+          /tmp/gemmlowp-master/internal \
+          "$PROJECT/third_party/gemmlowp/"
+    rm -rf /tmp/gemmlowp-master
+    echo "  ✓ gemmlowp (letöltve)"
+fi
+
+# ruy → "ruy/profiler/instrumentation.h"
+RUY="$TFLM_REPO/third_party/ruy"
+if [ -d "$RUY" ]; then
+    cp -r "$RUY/." "$PROJECT/third_party/ruy/"
+    echo "  ✓ ruy (repóból)"
+else
+    echo "  ! ruy nem a repóban — letöltés..."
+    curl -sL https://github.com/google/ruy/archive/refs/heads/master.tar.gz \
+        | tar -xz -C /tmp
+    cp -r /tmp/ruy-master/ruy "$PROJECT/third_party/ruy/"
+    rm -rf /tmp/ruy-master
+    echo "  ✓ ruy (letöltve)"
+fi
 
 # ─── Összefoglaló ─────────────────────────────────────────────────────────────
 echo ""
 echo "════════════════════════════════════════════════"
 echo "  Kész! $(ls "$PROJECT/tflm_srcs/" | wc -l) .cc fájl → tflm_srcs/"
 echo ""
-echo "  Következő lépések:"
-echo ""
-echo "  1. Docker image build:"
-echo "       docker build -t detector-build ."
-echo ""
-echo "  2. Fordítás (model.h generálás + g++):"
-echo "       docker run --rm -v \$(pwd):/project detector-build bash /project/build.sh"
-echo ""
-echo "  3. Flask szerver + detektor indítása:"
-echo "       python server.py &"
-echo "       docker run --rm --device=/dev/video0 \\"
-echo "         -e DISPLAY=\$DISPLAY \\"
-echo "         -v /tmp/.X11-unix:/tmp/.X11-unix \\"
-echo "         -v \$(pwd):/project \\"
-echo "         detector-build /project/detector"
+echo "  Következő lépés:"
+echo "       ./docker-build/_build.sh"
 echo "════════════════════════════════════════════════"
