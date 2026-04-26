@@ -66,7 +66,7 @@
 #define CONFIDENCE_THRESH 0.70f    /* 70% alatti találatot nem loggolunk */
 #define INFERENCE_EVERY_N 10       /* minden 10. képkockán fut a modell  */
 
-#define TENSOR_ARENA_KB   512
+#define TENSOR_ARENA_KB   1400
 static uint8_t tensor_arena[TENSOR_ARENA_KB * 1024];
 
 /* Label lista — a modell osztályainak sorrendjében */

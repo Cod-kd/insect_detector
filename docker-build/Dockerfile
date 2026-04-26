@@ -25,7 +25,8 @@ COPY docker-build/patch_compatibility.py .
 RUN python3 patch_compatibility.py
 
 # Build TFLite as static lib — cached unless tflm_standalone changes
-RUN find tflm_standalone -name "*.cc" \
+RUN mkdir -p tflm_objs && \
+    find tflm_standalone -name "*.cc" \
         | grep -v "_test\." \
         | grep -v "test_" \
         | grep -v "mock_" \
@@ -33,16 +34,19 @@ RUN find tflm_standalone -name "*.cc" \
         | grep -v "decode_state" \
         | grep -v "tflm_standalone/signal/" \
         | grep -v "recording_micro_allocator" \
-        | xargs -P4 -I{} g++ -c {} \
-            -Itflm_standalone \
-            -Itflm_standalone/third_party/flatbuffers/include \
-            -Itflm_standalone/third_party/gemmlowp \
-            -Itflm_standalone/third_party/ruy \
-            -Itflm_standalone/third_party \
-            -DTF_LITE_STATIC_MEMORY \
-            -std=c++17 -O2 \
-        && ar rcs tflm_lib.a *.o \
-        && rm *.o
+        | while read f; do \
+            out="tflm_objs/$(echo $f | tr '/' '_').o"; \
+            g++ -c "$f" -o "$out" \
+                -Itflm_standalone \
+                -Itflm_standalone/third_party/flatbuffers/include \
+                -Itflm_standalone/third_party/gemmlowp \
+                -Itflm_standalone/third_party/ruy \
+                -Itflm_standalone/third_party \
+                -DTF_LITE_STATIC_MEMORY \
+                -std=c++17 -O2; \
+          done && \
+    ar rcs tflm_lib.a tflm_objs/*.o
+    # && rm -rf tflm_objs   --- IN PROD ---
 
 # Copy rest of project separately so above layer stays cached
 COPY . .
@@ -75,6 +79,7 @@ ENV DEBIAN_FRONTEND=noninteractive
 RUN apt-get update && apt-get install -y \
     libopencv-dev \
     libcurl4-openssl-dev
+    # && rm -rf /var/lib/apt/lists/* --- IN PROD ---
 
 WORKDIR /app
 
