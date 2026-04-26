@@ -25,6 +25,7 @@ RUN find tflm_standalone -name "*.cc" \
         | grep -v "test_" \
         | grep -v "mock_" \
         | grep -v "fake_" \
+        | grep -v "decode_state" \
         | xargs -P4 -I{} g++ -c {} \
             -Itflm_standalone \
             -Itflm_standalone/third_party/flatbuffers/include \
