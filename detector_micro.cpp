@@ -1,48 +1,25 @@
 /*
- * detector_micro.cpp  —  TFLite Micro + PC kamera + Flask HTTP log
+ * detector_micro.cpp  —  TFLite Micro + HTTP képfogadás + Flask log
  *
- * FORDÍTÁS (Docker-ben, lásd Dockerfile):
- *   g++ detector_micro.cpp tflm_srcs/*.cc \
- *       $(pkg-config --cflags --libs opencv4) \
- *       -Itflm_includes \
- *       -Ithird_party/flatbuffers/include \
- *       -lcurl -lm -lpthread \
- *       -DTF_LITE_STATIC_MEMORY \
- *       -std=c++17 -O2 -o detector
- *
- * FÁJLSTRUKTÚRA:
- *   project/
- *   ├── detector_micro.cpp
- *   ├── Dockerfile
- *   ├── setup_tflm.sh
- *   ├── models/
- *       ├── model.tflite
- *       └── model.h          ← xxd -i models/model.tflite > models/model.h
+ * A képforrást a camera_sender.py adja HTTP POST-on keresztül.
+ * camera_sender.py használata:
+ *   python camera_sender.py            ← webcam (alapértelmezett)
+ *   python camera_sender.py --file kep.jpg     ← egyetlen képfájl
+ *   python camera_sender.py --file kep.jpg --loop  ← folyamatosan ismételve
  */
 
-/* ── TFLite Micro fejlécek ──────────────────────────────────── */
 #include "tensorflow/lite/micro/micro_interpreter.h"
 #include "tensorflow/lite/micro/micro_mutable_op_resolver.h"
 #include "tensorflow/lite/micro/system_setup.h"
 #include "tensorflow/lite/schema/schema_generated.h"
 
-/* ── Generált modell tömb (xxd -i models/model.tflite > models/model.h) */
 #include "models/model.h"
-/*
- * Az xxd a fájl útvonalából generálja a nevet, pl.:
- *   models/model.tflite  →  models_model_tflite[] + models_model_tflite_len
- * Ha eltér, módosítsd az alábbi két sort:
- */
 #define MODEL_DATA models_model_tflite
 #define MODEL_LEN  models_model_tflite_len
 
-/* ── OpenCV ─────────────────────────────────────────────────── */
 #include <opencv2/opencv.hpp>
-
-/* ── libcurl ────────────────────────────────────────────────── */
 #include <curl/curl.h>
 
-/* ── Standard ───────────────────────────────────────────────── */
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -51,25 +28,23 @@
 #include <stdint.h>
 #include <vector>
 #include <string>
+#include <sys/socket.h>
+#include <netinet/in.h>
+#include <unistd.h>
+#include <pthread.h>
 
 /* ═══════════════════════════════════════════════════════════════
    KONFIGURÁCIÓ
    ═══════════════════════════════════════════════════════════════ */
 #define FLASK_URL         "http://host.docker.internal:5000/log"
-/*                         ↑ Docker-ből a host PC Flask szervere
- *                           Linux Docker esetén: http://172.17.0.1:5000/log
- *                           Ha ugyanazon gépen fut: http://127.0.0.1:5000/log
- */
-#define CAMERA_INDEX      0
+#define LISTEN_PORT       8080
 #define INPUT_W           224
 #define INPUT_H           224
-#define CONFIDENCE_THRESH 0.70f    /* 70% alatti találatot nem loggolunk */
-#define INFERENCE_EVERY_N 10       /* minden 10. képkockán fut a modell  */
+#define CONFIDENCE_THRESH 0.70f
 
 #define TENSOR_ARENA_KB   1400
 static uint8_t tensor_arena[TENSOR_ARENA_KB * 1024];
 
-/* Label lista — a modell osztályainak sorrendjében */
 static const char *LABELS[] = {
     "Patkány",
     "Egér",
@@ -78,10 +53,18 @@ static const char *LABELS[] = {
     "Molylepke",
     "Hangya raj"
 };
-static const int NUM_LABELS = 6;   /* ← 6 label van! */
+static const int NUM_LABELS = 6;
 
 /* ═══════════════════════════════════════════════════════════════
-   BASE64 KÓDOLÁS  (libb64 nélkül, beépített)
+   GLOBÁLIS ÁLLAPOT  —  HTTP szerver ↔ inferencia szál
+   ═══════════════════════════════════════════════════════════════ */
+static pthread_mutex_t frame_mutex = PTHREAD_MUTEX_INITIALIZER;
+static pthread_cond_t  frame_cond  = PTHREAD_COND_INITIALIZER;
+static std::vector<uint8_t> pending_frame;
+static bool frame_ready = false;
+
+/* ═══════════════════════════════════════════════════════════════
+   BASE64
    ═══════════════════════════════════════════════════════════════ */
 static const char B64[] =
     "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
@@ -102,49 +85,23 @@ static std::string base64_encode(const uint8_t *src, size_t len) {
 }
 
 /* ═══════════════════════════════════════════════════════════════
-   HTTP POST  →  Flask  (multipart: JSON meta + JPEG kép)
+   HTTP POST  →  Flask
    ═══════════════════════════════════════════════════════════════ */
 static size_t curl_sink(void*, size_t s, size_t n, void*) { return s*n; }
 
-/*
- * Küld a Flask /log végpontjára:
- *   {
- *     "timestamp": "2024-01-15 14:23:01",
- *     "label":     "Egér",
- *     "confidence": 0.9231,
- *     "position":  {"x": 210, "y": 180},
- *     "image_b64": "<JPEG base64>"
- *   }
- *
- * A "position" a képkocka közepe — osztályozó modellnél nincs
- * valódi bounding box, ezért a teljes frame közepét küldjük.
- * Ha a jövőben detection modellre váltasz, itt add meg a bbox közepét.
- */
 static void post_log(const char *label, float confidence,
-                     int cx, int cy,
-                     const cv::Mat &crop)
+                     int cx, int cy, const cv::Mat &crop)
 {
-    /* JPEG kódolás memóriába */
     std::vector<uint8_t> jpeg_buf;
-    std::vector<int> params = {cv::IMWRITE_JPEG_QUALITY, 80};
-    cv::imencode(".jpg", crop, jpeg_buf, params);
+    cv::imencode(".jpg", crop, jpeg_buf, {cv::IMWRITE_JPEG_QUALITY, 80});
     std::string img_b64 = base64_encode(jpeg_buf.data(), jpeg_buf.size());
 
-    /* Timestamp */
     std::time_t t = std::time(nullptr);
-
     std::tm tm_info{};
-
-    #ifdef _WIN32
-        localtime_s(&tm_info, &t);
-    #else
-        localtime_r(&t, &tm_info);
-    #endif
-
+    localtime_r(&t, &tm_info);
     char ts[32];
     std::strftime(ts, sizeof(ts), "%Y-%m-%d %H:%M:%S", &tm_info);
 
-    /* JSON összerakása — a base64 string lehet nagy, std::string kell */
     std::string json = std::string("{")
         + "\"timestamp\":\"" + ts + "\","
         + "\"label\":\""     + label + "\","
@@ -156,10 +113,8 @@ static void post_log(const char *label, float confidence,
 
     CURL *curl = curl_easy_init();
     if (!curl) return;
-
     struct curl_slist *headers = NULL;
     headers = curl_slist_append(headers, "Content-Type: application/json");
-
     curl_easy_setopt(curl, CURLOPT_URL,            FLASK_URL);
     curl_easy_setopt(curl, CURLOPT_POSTFIELDS,     json.c_str());
     curl_easy_setopt(curl, CURLOPT_POSTFIELDSIZE,  (long)json.size());
@@ -167,17 +122,79 @@ static void post_log(const char *label, float confidence,
     curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION,  curl_sink);
     curl_easy_setopt(curl, CURLOPT_TIMEOUT,        3L);
     curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT, 2L);
-
     CURLcode res = curl_easy_perform(curl);
     if (res != CURLE_OK)
         fprintf(stderr, "[curl] %s\n", curl_easy_strerror(res));
-
     curl_slist_free_all(headers);
     curl_easy_cleanup(curl);
 }
 
 /* ═══════════════════════════════════════════════════════════════
-   KÉP  →  INPUT TENSOR
+   HTTP SZERVER  —  fogadja a JPEG képkockákat POST /frame-en
+   ═══════════════════════════════════════════════════════════════ */
+static void *http_server_thread(void *) {
+    int server_fd = socket(AF_INET, SOCK_STREAM, 0);
+    int opt = 1;
+    setsockopt(server_fd, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt));
+
+    struct sockaddr_in addr{};
+    addr.sin_family      = AF_INET;
+    addr.sin_addr.s_addr = INADDR_ANY;
+    addr.sin_port        = htons(LISTEN_PORT);
+    bind(server_fd, (struct sockaddr*)&addr, sizeof(addr));
+    listen(server_fd, 5);
+
+    printf("[http] Képfogadó szerver fut: port %d\n", LISTEN_PORT);
+
+    while (true) {
+        int client = accept(server_fd, nullptr, nullptr);
+        if (client < 0) continue;
+
+        std::vector<uint8_t> buf(1024 * 1024);  /* 1MB buffer */
+        ssize_t total = 0;
+
+        while (total < (ssize_t)buf.size()) {
+            ssize_t n = recv(client, buf.data() + total,
+                             buf.size() - total, 0);
+            if (n <= 0) break;
+            total += n;
+
+            std::string hdr(buf.begin(), buf.begin() + std::min(total, (ssize_t)2048));
+            size_t hdr_end = hdr.find("\r\n\r\n");
+            if (hdr_end == std::string::npos) continue;
+
+            size_t cl_pos = hdr.find("Content-Length: ");
+            if (cl_pos == std::string::npos) break;
+            int content_len = std::stoi(hdr.substr(cl_pos + 16));
+            size_t body_start = hdr_end + 4;
+            size_t need = body_start + content_len;
+
+            buf.resize(need + 1);
+            while (total < (ssize_t)need) {
+                n = recv(client, buf.data() + total, need - total, 0);
+                if (n <= 0) break;
+                total += n;
+            }
+
+            std::vector<uint8_t> jpeg(buf.begin() + body_start,
+                                      buf.begin() + body_start + content_len);
+            pthread_mutex_lock(&frame_mutex);
+            pending_frame = std::move(jpeg);
+            frame_ready   = true;
+            pthread_cond_signal(&frame_cond);
+            pthread_mutex_unlock(&frame_mutex);
+
+            const char *resp = "HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nOK";
+            send(client, resp, strlen(resp), 0);
+            break;
+        }
+        close(client);
+    }
+    return nullptr;
+}
+
+/* ═══════════════════════════════════════════════════════════════
+   INPUT TENSOR
    ═══════════════════════════════════════════════════════════════ */
 static void fill_input_tensor(TfLiteTensor *tensor, const cv::Mat &frame) {
     cv::Mat resized, rgb;
@@ -198,12 +215,9 @@ static void fill_input_tensor(TfLiteTensor *tensor, const cv::Mat &frame) {
         for (int y = 0; y < INPUT_H; y++)
             for (int x = 0; x < INPUT_W; x++) {
                 cv::Vec3b px = rgb.at<cv::Vec3b>(y, x);
-                *dst++ = px[0];
-                *dst++ = px[1];
-                *dst++ = px[2];
+                *dst++ = px[0]; *dst++ = px[1]; *dst++ = px[2];
             }
     } else if (tensor->type == kTfLiteInt8) {
-        /* INT8 kvantált bemenet — a legtöbb quantized MobileNet ilyen */
         int8_t *dst = tensor->data.int8;
         float scale = tensor->params.scale;
         int   zp    = tensor->params.zero_point;
@@ -212,13 +226,10 @@ static void fill_input_tensor(TfLiteTensor *tensor, const cv::Mat &frame) {
                 cv::Vec3b px = rgb.at<cv::Vec3b>(y, x);
                 for (int c = 0; c < 3; c++) {
                     int q = (int)roundf(px[c] / (255.0f * scale)) + zp;
-                    if (q > 127)  q = 127;
-                    if (q < -128) q = -128;
+                    q = q > 127 ? 127 : (q < -128 ? -128 : q);
                     *dst++ = (int8_t)q;
                 }
             }
-    } else {
-        fprintf(stderr, "[warn] Ismeretlen input tensor típus: %d\n", tensor->type);
     }
 }
 
@@ -244,24 +255,11 @@ static void read_output(const TfLiteTensor *tensor,
             if (p > best) { best = p; *best_idx = i; }
         }
         *best_conf = best;
-
-    } else if (tensor->type == kTfLiteUInt8) {
-        const uint8_t *out = tensor->data.uint8;
-        float scale = tensor->params.scale;
-        int   zp    = tensor->params.zero_point;
-        uint8_t braw = 0;
-        for (int i = 0; i < n; i++)
-            if (out[i] > braw) { braw = out[i]; *best_idx = i; }
-        *best_conf = (braw - zp) * scale;
-
     } else if (tensor->type == kTfLiteInt8) {
-        /* INT8 kimenet — a DEQUANTIZE op előtti állapot */
         const int8_t *out = tensor->data.int8;
         float scale = tensor->params.scale;
         int   zp    = tensor->params.zero_point;
-        /* Softmax az int8 értékekből */
-        float vals[NUM_LABELS];
-        float mx = -1e9f;
+        float vals[NUM_LABELS], mx = -1e9f;
         for (int i = 0; i < n; i++) {
             vals[i] = (out[i] - zp) * scale;
             if (vals[i] > mx) mx = vals[i];
@@ -274,11 +272,19 @@ static void read_output(const TfLiteTensor *tensor,
             if (p > best) { best = p; *best_idx = i; }
         }
         *best_conf = best;
+    } else if (tensor->type == kTfLiteUInt8) {
+        const uint8_t *out = tensor->data.uint8;
+        float scale = tensor->params.scale;
+        int   zp    = tensor->params.zero_point;
+        uint8_t braw = 0;
+        for (int i = 0; i < n; i++)
+            if (out[i] > braw) { braw = out[i]; *best_idx = i; }
+        *best_conf = (braw - zp) * scale;
     }
 }
 
 /* ═══════════════════════════════════════════════════════════════
-   OP RESOLVER  —  a modell tényleges op listája alapján
+   OP RESOLVER
    ═══════════════════════════════════════════════════════════════ */
 static void register_ops(tflite::MicroMutableOpResolver<9> &resolver) {
     resolver.AddQuantize();
@@ -301,20 +307,17 @@ int main(void) {
     printf("[init] Modell betöltése (%u bájt)...\n", MODEL_LEN);
     const tflite::Model *model = tflite::GetModel(MODEL_DATA);
     if (model->version() != TFLITE_SCHEMA_VERSION) {
-        fprintf(stderr, "[hiba] Schema verzió eltérés: modell=%d runtime=%d\n",
-                model->version(), TFLITE_SCHEMA_VERSION);
+        fprintf(stderr, "[hiba] Schema verzió eltérés\n");
         return 1;
     }
 
     tflite::MicroMutableOpResolver<9> resolver;
     register_ops(resolver);
-
     tflite::MicroInterpreter interpreter(
         model, resolver, tensor_arena, sizeof(tensor_arena));
 
     if (interpreter.AllocateTensors() != kTfLiteOk) {
-        fprintf(stderr, "[hiba] AllocateTensors sikertelen — "
-                        "növeld a TENSOR_ARENA_KB értékét!\n");
+        fprintf(stderr, "[hiba] AllocateTensors sikertelen — növeld TENSOR_ARENA_KB!\n");
         return 1;
     }
     printf("[init] Arena felhasznált: %zu KB\n",
@@ -322,85 +325,52 @@ int main(void) {
 
     TfLiteTensor       *input  = interpreter.input(0);
     const TfLiteTensor *output = interpreter.output(0);
-
-    printf("[init] Input  shape: [%d,%d,%d,%d] típus=%d\n",
-           input->dims->data[0], input->dims->data[1],
-           input->dims->data[2], input->dims->data[3], input->type);
-    printf("[init] Output shape: [%d,%d] típus=%d\n",
-           output->dims->data[0], output->dims->data[1], output->type);
-
-    /* Kamera */
-    cv::VideoCapture cap(CAMERA_INDEX);
-    if (!cap.isOpened()) {
-        fprintf(stderr, "[hiba] Kamera nem érhető el (index=%d)\n", CAMERA_INDEX);
-        return 1;
-    }
-    int cam_w = 640, cam_h = 480;
-    cap.set(cv::CAP_PROP_FRAME_WIDTH,  cam_w);
-    cap.set(cv::CAP_PROP_FRAME_HEIGHT, cam_h);
-    printf("[kamera] Megnyitva (%dx%d). ESC = kilépés.\n\n", cam_w, cam_h);
+    printf("[init] Input  [1,%d,%d,3] típus=%d\n", INPUT_H, INPUT_W, input->type);
+    printf("[init] Output [1,%d] típus=%d\n", NUM_LABELS, output->type);
 
     curl_global_init(CURL_GLOBAL_DEFAULT);
 
-    cv::Mat frame;
-    int frame_n = 0;
+    pthread_t srv_thread;
+    pthread_create(&srv_thread, nullptr, http_server_thread, nullptr);
+
+    printf("[ready] Várakozás képkockákra (port %d)...\n", LISTEN_PORT);
+    printf("        camera_sender.py --camera   ← webcam\n");
+    printf("        camera_sender.py --file kep.jpg  ← képfájl\n\n");
 
     while (true) {
-        cap >> frame;
+        pthread_mutex_lock(&frame_mutex);
+        while (!frame_ready)
+            pthread_cond_wait(&frame_cond, &frame_mutex);
+        std::vector<uint8_t> jpeg = std::move(pending_frame);
+        frame_ready = false;
+        pthread_mutex_unlock(&frame_mutex);
+
+        cv::Mat frame = cv::imdecode(jpeg, cv::IMREAD_COLOR);
         if (frame.empty()) continue;
-        frame_n++;
 
-        if (frame_n % INFERENCE_EVERY_N == 0) {
-            fill_input_tensor(input, frame);
+        fill_input_tensor(input, frame);
 
-            if (interpreter.Invoke() == kTfLiteOk) {
-                int   best_idx;
-                float best_conf;
-                read_output(output, &best_idx, &best_conf);
+        if (interpreter.Invoke() == kTfLiteOk) {
+            int   best_idx;
+            float best_conf;
+            read_output(output, &best_idx, &best_conf);
 
-                const char *label = (best_idx < NUM_LABELS)
-                    ? LABELS[best_idx] : "ismeretlen";
+            const char *label = (best_idx < NUM_LABELS)
+                ? LABELS[best_idx] : "ismeretlen";
 
-                printf("[detekció] %-15s  %.1f%%\n",
-                       label, best_conf * 100.0f);
+            printf("[detekció] %-15s  %.1f%%\n", label, best_conf * 100.0f);
 
-                /* Overlay a preview ablakra */
-                char txt[80];
-                snprintf(txt, sizeof(txt), "%s  %.0f%%",
-                         label, best_conf * 100.0f);
-                cv::putText(frame, txt, cv::Point(10, 36),
-                    cv::FONT_HERSHEY_SIMPLEX, 0.9,
-                    cv::Scalar(0, 230, 160), 2);
-
-                if (best_conf >= CONFIDENCE_THRESH) {
-                    /*
-                     * Osztályozó modellnél nincs valódi bounding box.
-                     * Pozícióként a frame közepét küldjük.
-                     * Crop: a frame középső 50%-a (ahol valószínűleg az obj van)
-                     */
-                    int cx = frame.cols / 2;
-                    int cy = frame.rows / 2;
-                    int cw = frame.cols / 2;
-                    int ch = frame.rows / 2;
-                    cv::Rect roi(cx - cw/2, cy - ch/2, cw, ch);
-                    cv::Mat crop = frame(roi).clone();
-
-                    /* Piros keret a crop területén */
-                    cv::rectangle(frame, roi, cv::Scalar(0, 0, 220), 2);
-
-                    post_log(label, best_conf, cx, cy, crop);
-                    printf("[log küldve] %s @ (%d,%d)\n", label, cx, cy);
-                }
+            if (best_conf >= CONFIDENCE_THRESH) {
+                int cx = frame.cols / 2, cy = frame.rows / 2;
+                int cw = frame.cols / 2, ch = frame.rows / 2;
+                cv::Rect roi(cx - cw/2, cy - ch/2, cw, ch);
+                cv::Mat crop = frame(roi).clone();
+                post_log(label, best_conf, cx, cy, crop);
+                printf("[log küldve] %s @ (%d,%d)\n", label, cx, cy);
             }
         }
-
-        cv::imshow("Detektor  [ESC = kilepes]", frame);
-        if (cv::waitKey(1) == 27) break;
     }
 
     curl_global_cleanup();
-    cap.release();
-    cv::destroyAllWindows();
-    printf("[vege] Leallitva.\n");
     return 0;
 }
