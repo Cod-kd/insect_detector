@@ -1,5 +1,3 @@
 tflite-micro
-tflm_srcs
-tflm_includes
-third_party
+tflm_standalone
 models/model.h

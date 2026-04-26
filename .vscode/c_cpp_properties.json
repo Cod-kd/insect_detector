@@ -1,0 +1,15 @@
+{
+    "configurations": [
+        {
+            "name": "Win32",
+            "includePath": [
+                "${workspaceFolder}/**",
+                "${workspaceFolder}/tflm_standalone",
+                "C:/msys64/mingw64/include",
+                "C:/msys64/mingw64/include/opencv4"
+            ],
+            "compilerPath": "C:/msys64/usr/bin/g++.exe"
+        }
+    ],
+    "version": 4
+}
