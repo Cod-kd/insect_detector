@@ -1,0 +1,5 @@
+./tflite-micro
+./tflm_srcs
+./tflm_includes
+./tflm_third_party
+./models/model.h
