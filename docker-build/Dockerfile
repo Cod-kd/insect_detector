@@ -18,7 +18,7 @@ WORKDIR /app
 # Copy EVERYTHING from project root (important!)
 COPY . .
 
-# model.h generálása a .tflite tömbből (ha még nincs meg)
+# Generate model.h from .tflite if not already present
 RUN if [ ! -f models/model.h ] && [ -f models/model.tflite ]; then \
         xxd -i models/model.tflite > models/model.h; \
     fi
@@ -30,6 +30,7 @@ RUN g++ detector_micro.cpp tflm_srcs/*.cc \
     -Ithird_party/flatbuffers/include \
     -Ithird_party/gemmlowp \
     -Ithird_party/ruy \
+    -Ithird_party/kissfft \
     -Ithird_party \
     -lcurl -lm -lpthread \
     -DTF_LITE_STATIC_MEMORY \
