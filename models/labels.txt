@@ -1,0 +1,6 @@
+0 Patkány
+1 Egér
+2 Csótány
+3 Hangya
+4 Molylepke
+5 Hangya raj
