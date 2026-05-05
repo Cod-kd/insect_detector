@@ -40,7 +40,7 @@
 #define LISTEN_PORT       8080
 #define INPUT_W           224
 #define INPUT_H           224
-#define CONFIDENCE_THRESH 0.70f
+#define CONFIDENCE_THRESH 0.95f
 
 #define TENSOR_ARENA_KB   1400
 static uint8_t tensor_arena[TENSOR_ARENA_KB * 1024];
