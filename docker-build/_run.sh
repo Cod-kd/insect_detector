@@ -16,11 +16,12 @@ if [ "$(docker ps -aq -f name=$CONTAINER_NAME)" ]; then
     docker rm -f $CONTAINER_NAME
 fi
 
-# Create container with port mapping for frame receiver
+# Create container with port mapping and env config
 echo "📦 Creating container..."
 docker create \
     --name $CONTAINER_NAME \
     -p 8080:8080 \
+    --env-file detector.env \
     $IMAGE_NAME
 
 # Start container

@@ -9,7 +9,6 @@ RUN apt-get update && apt-get install -y \
     pkg-config \
     libopencv-dev \
     libcurl4-openssl-dev \
-    xxd \
     ccache \
     python3
 
@@ -51,12 +50,7 @@ RUN mkdir -p tflm_objs && \
 # Copy rest of project separately so above layer stays cached
 COPY . .
 
-# Generate model.h if not present
-RUN if [ ! -f models/model.h ] && [ -f models/model.tflite ]; then \
-        xxd -i models/model.tflite > models/model.h; \
-    fi
-
-# Only your code recompiles on changes
+# Compile — no xxd/model.h needed, model loaded at runtime from file
 RUN g++ detector_micro.cpp \
     $(pkg-config --cflags --libs opencv4) \
     -Itflm_standalone \
@@ -84,5 +78,11 @@ RUN apt-get update && apt-get install -y \
 WORKDIR /app
 
 COPY --from=builder /app/detector .
+
+# Model és config — futásidőben olvasódik
+COPY models/model.tflite ./models/model.tflite
+COPY detector.env .
+
+EXPOSE 8080
 
 CMD ["./detector"]
