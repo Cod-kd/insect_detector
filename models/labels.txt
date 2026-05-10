@@ -1,6 +1,6 @@
-0 Patkány
-1 Egér
-2 Csótány
-3 Hangya
-4 Molylepke
-5 Hangya raj
+0 eger
+1 patkany
+2 molylepke
+3 csotany
+4 ember
+5 hatter

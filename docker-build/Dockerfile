@@ -53,6 +53,7 @@ COPY . .
 # Compile — no xxd/model.h needed, model loaded at runtime from file
 RUN g++ detector_micro.cpp \
     $(pkg-config --cflags --libs opencv4) \
+    -I. \
     -Itflm_standalone \
     -Itflm_standalone/third_party/flatbuffers/include \
     -Itflm_standalone/third_party/gemmlowp \
@@ -79,8 +80,7 @@ WORKDIR /app
 
 COPY --from=builder /app/detector .
 
-# Model és config — futásidőben olvasódik
-COPY models/model.tflite ./models/model.tflite
+# Config — futásidőben olvasódik
 COPY detector.env .
 
 EXPOSE 8080

@@ -37,6 +37,9 @@
 #include <unistd.h>
 #include <pthread.h>
 
+/* ── MODEL ──────────────────────────────────────────────────── */
+#include "models/model.h"
+
 /* ═══════════════════════════════════════════════════════════════
    .ENV OLVASÓ  —  egyszerű KEY=VALUE parser
    ═══════════════════════════════════════════════════════════════ */
@@ -97,7 +100,6 @@ static std::vector<std::string> split_csv(const std::string &s) {
    KONFIGURÁCIÓ  —  futásidőben töltődik be
    ═══════════════════════════════════════════════════════════════ */
 struct Config {
-    std::string model_path;
     int         input_w, input_h;
     int         tensor_arena_kb;
     std::string flask_url;
@@ -114,7 +116,6 @@ static Config cfg;
 static void load_config() {
     load_env("/app/detector.env");   /* opcionális, Docker --env-file felülírja */
 
-    cfg.model_path       = env("MODEL_PATH", "/app/models/model.tflite");
     cfg.input_w          = env_int("INPUT_W",          224);
     cfg.input_h          = env_int("INPUT_H",          224);
     cfg.tensor_arena_kb  = env_int("TENSOR_ARENA_KB",  1400);
@@ -134,7 +135,6 @@ static void load_config() {
     for (auto &l : log_vec)    cfg.log_labels.insert(l);
     for (auto &l : silent_vec) cfg.silent_labels.insert(l);
 
-    printf("[config] Modell    : %s\n",   cfg.model_path.c_str());
     printf("[config] Input     : %dx%d\n",cfg.input_w, cfg.input_h);
     printf("[config] Threshold : %.0f%%\n",cfg.confidence_thresh * 100.0f);
     printf("[config] N-of-M    : %d/%d\n",cfg.confirm_n, cfg.confirm_m);
@@ -419,23 +419,9 @@ static void register_ops(tflite::MicroMutableOpResolver<9> &resolver) {
 int main(void) {
     tflite::InitializeTarget();
     load_config();
+    printf("[init] Beégetett modell mérete: %u bájt\n", models_model_tflite_len);
 
-    /* Modell betöltése fájlból */
-    printf("[init] Modell betöltése: %s\n", cfg.model_path.c_str());
-    FILE *f = fopen(cfg.model_path.c_str(), "rb");
-    if (!f) {
-        fprintf(stderr, "[hiba] Nem nyitható meg: %s\n", cfg.model_path.c_str());
-        return 1;
-    }
-    fseek(f, 0, SEEK_END);
-    size_t model_size = ftell(f);
-    rewind(f);
-    std::vector<uint8_t> model_data(model_size);
-    fread(model_data.data(), 1, model_size, f);
-    fclose(f);
-    printf("[init] Modell mérete: %zu bájt\n", model_size);
-
-    const tflite::Model *model = tflite::GetModel(model_data.data());
+    const tflite::Model *model = tflite::GetModel(models_model_tflite);
     if (model->version() != TFLITE_SCHEMA_VERSION) {
         fprintf(stderr, "[hiba] Schema verzió eltérés\n");
         return 1;
