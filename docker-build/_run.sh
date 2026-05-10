@@ -2,7 +2,7 @@
 
 set -e
 
-IMAGE_NAME="insect-detector"
+IMAGE_NAME="kamikou/insect-detector"
 CONTAINER_NAME="insect-detector-AI"
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
