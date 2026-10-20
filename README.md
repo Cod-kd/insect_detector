@@ -69,15 +69,19 @@ Az inferencia **TensorFlow Lite Micro** motorral fut, így a detektor később m
 A projekt könyvtárában:
 
 ```bash
-# TFLite Micro letöltése és standalone fa generálása
-git clone --depth=1 https://github.com/tensorflow/tflite-micro.git
-cd tflite-micro && python3 tensorflow/lite/micro/tools/project_generation/create_tflm_tree.py ../tflm_standalone
+# TFLite Micro letöltése (rögzített, tesztelt commit) és standalone fa generálása
+TFLM_COMMIT=55b02a9e265c2950ff1963eb02831ee31ca028be
+git init tflite-micro && cd tflite-micro
+git fetch --depth=1 https://github.com/tensorflow/tflite-micro.git $TFLM_COMMIT && git checkout FETCH_HEAD
+python3 tensorflow/lite/micro/tools/project_generation/create_tflm_tree.py ../tflm_standalone
 cd .. && rm -rf tflite-micro
 
 # A modell beégetése C headerbe (a detektor ezt fordítja bele a binárisba)
 xxd -i models/model.tflite > models/model.h
 ```
 
+> A TFLM commit szándékosan rögzített: a `main` ág változásai (például áthelyezett headerek) elronthatják a buildet. Frissítéskor írd át a `TFLM_COMMIT` értékét, és buildeld újra.
+>
 > A `tflm_standalone/` és a `models/model.h` a `.gitignore` része, ezért ezeket minden friss klón után újra elő kell állítani. A `_build.sh` a `model.h`-t automatikusan legenerálja, ha hiányzik vagy régebbi a `model.tflite`-nál. A `tflm_standalone/` hiánya esetén hibaüzenettel leáll.
 
 ### 2. Log szerver indítása
